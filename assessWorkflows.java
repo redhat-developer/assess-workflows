@@ -82,8 +82,13 @@ class assessWorkflows implements Callable<Integer> {
     record Job(String name, List<Step> steps) {};
     record Step(String name, String uses) {
 
+        boolean isReusable() {
+            var first = uses.indexOf('/');
+            var last = uses.lastIndexOf('/');
+            return (uses != null && (uses.endsWith(".yaml") || uses.endsWith(".yml") || first != last));
+        }
         boolean isTrusted() {
-            return (uses == null || trustedPublishers.stream().anyMatch(tp -> uses.startsWith(tp + "/")));
+            return (uses == null || isReusable() || trustedPublishers.stream().anyMatch(tp -> uses.startsWith(tp + "/")));
         }
 
         String getOrg() {
@@ -127,24 +132,26 @@ class assessWorkflows implements Callable<Integer> {
             var wf = mapper.readValue(IOUtils.toString(workflow.read(), "UTF-8"), Workflow.class);
 
             wf.jobs().forEach((k, v) -> {
-                v.steps().forEach(s -> {
-                    if (!s.isTrusted()) {
-                        try {
-                            var repo = github.getRepository(s.getOrg() + "/" + s.getRepo());
-                            var sha = "";
+                if (v.steps() != null) {
+                    v.steps().forEach(s -> {
+                        if (!s.isTrusted()) {
                             try {
-                                var tree = repo.getTree(s.getVersion());
-                                sha = tree.getSha();
-                            } catch (Exception e) {
-                                throw new RuntimeException("Cannot find action source version", e);
-                            }
+                                var repo = github.getRepository(s.getOrg() + "/" + s.getRepo());
+                                var sha = "";
+                                try {
+                                    var tree = repo.getTree(s.getVersion());
+                                    sha = tree.getSha();
+                                } catch (Exception e) {
+                                    throw new RuntimeException("Cannot find action source version", e);
+                                }
 
-                            System.out.println("Job " + k + " is using action " + s.uses() + " should be: " + s.uses().replace(s.getVersion(), sha));
-                        } catch (IOException e) {
-                            throw new RuntimeException(e);
+                                System.out.println("Job " + k + " is using action " + s.uses() + " should be: " + s.uses().replace(s.getVersion(), sha));
+                            } catch (IOException e) {
+                                throw new RuntimeException(e);
+                            }
                         }
-                    }
-                });
+                    });
+                };
             });
         } catch (IOException e) {
             throw new RuntimeException(e);
