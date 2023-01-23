@@ -53,7 +53,8 @@ class assessWorkflows implements Callable<Integer> {
     
     @Override
     public Integer call() throws Exception {
-        System.out.println("Fetching "+ organization + " repositories"); 
+        // System.out.println("Fetching "+ organization + " repositories");
+        System.out.println("WORKFLOW, ACTION, DESIRED");
         var org = github.getOrganization(organization);
         org.getRepositories().forEach(this::analyze);
         return 0;
@@ -65,16 +66,17 @@ class assessWorkflows implements Callable<Integer> {
                 return;
             }
             if (repo.isArchived()) {
-                System.out.println("✋ ignoring archived "+repo.getHtmlUrl());
+                // System.out.println("✋ ignoring archived "+repo.getHtmlUrl());
                 return;
             }
-            System.out.println("🔍 analyzing "+repo.getHtmlUrl());
+            // System.out.println("🔍 analyzing "+repo.getHtmlUrl());
             var workflowsDir = repo.getDirectoryContent(".github/workflows/");
             workflowsDir.forEach(this::analyzeWorkflow );
         } catch (GHFileNotFoundException missing) {
             // System.err.println(repo.getHtmlUrl() + " has no workflows?!"); 
         } catch (Exception e) {
-            throw new RuntimeException(e);
+            // throw new RuntimeException(e);
+            System.out.println("Error analyzing "+ repo.getHtmlUrl());
         }
     }
 
@@ -122,12 +124,12 @@ class assessWorkflows implements Callable<Integer> {
 
     private void analyzeWorkflow(GHContent workflow) {
         if (!workflow.isFile()) {
-            System.out.println(workflow.getName() + " is a directory");
+            // System.out.println(workflow.getName() + " is a directory");
             //TODO see if we need to look inside this dir/
             return;
         }
         try {
-            System.out.println(" 👀 "+workflow.getHtmlUrl());
+            // System.out.println(" 👀 "+workflow.getHtmlUrl());
             var mapper = new ObjectMapper(new YAMLFactory()).configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
             var wf = mapper.readValue(IOUtils.toString(workflow.read(), "UTF-8"), Workflow.class);
 
@@ -145,7 +147,7 @@ class assessWorkflows implements Callable<Integer> {
                                     throw new RuntimeException("Cannot find action source version", e);
                                 }
 
-                                System.out.println("Job " + k + " is using action " + s.uses() + " should be: " + s.uses().replace(s.getVersion(), sha));
+                                System.out.println(workflow.getHtmlUrl() + ", " + s.uses() + ", " + s.uses().replace(s.getVersion(), sha));
                             } catch (IOException e) {
                                 throw new RuntimeException(e);
                             }
@@ -155,12 +157,6 @@ class assessWorkflows implements Callable<Integer> {
             });
         } catch (IOException e) {
             throw new RuntimeException(e);
-        }
-    }
-
-    static record Action(String publisher, String name, String version) {
-        public String toString() {
-            return publisher+"/"+name+"@"+version;
         }
     }
 }
