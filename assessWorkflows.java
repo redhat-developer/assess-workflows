@@ -26,6 +26,7 @@ import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import org.apache.commons.io.IOUtils;
 import org.kohsuke.github.GHContent;
 import org.kohsuke.github.GHFileNotFoundException;
+import org.kohsuke.github.GHPerson;
 import org.kohsuke.github.GHRepository;
 import org.kohsuke.github.GitHub;
 
@@ -38,8 +39,8 @@ import picocli.CommandLine.Option;
         description = "Lists untrusted github actions used in github workflows throughout an organization")
 class assessWorkflows implements Callable<Integer> {
 
-    @Parameters(index = "0", description = "The organization to analyze", defaultValue = "redhat-developer")
-    private static String organization;
+    @Parameters(index = "0", description = "The organization/user to analyze", defaultValue = "redhat-developer")
+    private static String orgOrUser;
 
     @Option(names = { "-t", "--trusted" },  description="Comma-separated list of trusted action publishers",  split = ",", defaultValue = "actions,docker" )
     private static List<String> trustedPublishers = new ArrayList<>();
@@ -59,9 +60,14 @@ class assessWorkflows implements Callable<Integer> {
     
     @Override
     public Integer call() throws Exception {
-        System.out.println("Fetching "+ organization + " repositories"); 
-        var org = github.getOrganization(organization);
-        org.getRepositories().forEach(this::analyze);
+        System.out.println("Fetching "+ orgOrUser + " repositories");
+        GHPerson owner = null;
+        try {
+            owner = github.getOrganization(orgOrUser);
+        } catch (Exception e) {
+            owner = github.getUser(orgOrUser);
+        }
+        owner.getRepositories().forEach(this::analyze);
         return 0;
     }
 
@@ -187,7 +193,9 @@ class assessWorkflows implements Callable<Integer> {
         }
 
         boolean isTrusted() {
-            return  org == null || organization.equals(org) || trustedPublishers.contains(org);
+            return  org == null // Action local to this repo is trusted
+                    || orgOrUser.equals(org) // Current owner is trusted
+                    || trustedPublishers.contains(org); //Trusted org
         }
     }
 }
