@@ -64,7 +64,7 @@ class assessWorkflows implements Callable<Integer> {
         GHPerson owner = null;
         try {
             owner = github.getOrganization(orgOrUser);
-        } catch (Exception e) {
+        } catch (GHFileNotFoundException e) {
             owner = github.getUser(orgOrUser);
         }
         owner.getRepositories().forEach(this::analyze);
