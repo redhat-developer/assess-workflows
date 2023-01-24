@@ -8,17 +8,17 @@ Lists all usages of github actions in github workflows, in an organization. Requ
 
 - In a terminal, run: 
 
-> jbang assessWorkflows.java > report.txt
+> jbang assessWorkflows.java my-github-org > report.txt
 
 JBang will automatically download a compatible JDK if needed.
 
 - To generate Pull Requests for some repositories, run: 
 
-> jbang assessWorkflows.java -pr -r repo1,repo2
+> jbang assessWorkflows.java my-github-org -pr -r repo1,repo2
 
 - Wildcard suffixes are supported too, as in: 
 
-> jbang assessWorkflows.java -pr -r "repo*"
+> jbang assessWorkflows.java my-github-org -pr -r "repo*"
 
 For more info, use the help:
 
@@ -42,7 +42,7 @@ organization
 
 ```
 
-Example output:
+Example output ([`redhat-developer`](https://github.com/redhat-developer) is the default organization):
 
 ```
  jbang ./assessWorkflows.java -r "vscode-*" -pr              
