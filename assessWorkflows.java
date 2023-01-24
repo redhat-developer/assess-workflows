@@ -5,62 +5,70 @@
 //DEPS com.fasterxml.jackson.dataformat:jackson-dataformat-yaml:2.12.4
 //DEPS com.fasterxml.jackson.core:jackson-core:2.12.4
 //DEPS com.fasterxml.jackson.core:jackson-databind:2.12.4
+//DEPS com.google.guava:guava:31.1-jre
 //JAVA 17
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
-import java.util.List;
-import java.util.Objects;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.regex.Pattern;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.JsonMappingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.exc.MismatchedInputException;
-import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
 import org.apache.commons.io.IOUtils;
 import org.kohsuke.github.GHContent;
 import org.kohsuke.github.GHFileNotFoundException;
+import org.kohsuke.github.GHIssueState;
 import org.kohsuke.github.GHPerson;
 import org.kohsuke.github.GHRepository;
 import org.kohsuke.github.GitHub;
 
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.exc.MismatchedInputException;
+import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
+import com.google.common.collect.ArrayListMultimap;
+import com.google.common.collect.Multimap;
+
 import picocli.CommandLine;
 import picocli.CommandLine.Command;
-import picocli.CommandLine.Parameters;
 import picocli.CommandLine.Option;
+import picocli.CommandLine.Parameters;
 
-@Command(name = "assessWorkflows", mixinStandardHelpOptions = true, version = "assessWorkflows 0.1",
-        description = "Lists untrusted github actions used in github workflows throughout an organization")
+@Command(name = "assessWorkflows", mixinStandardHelpOptions = true, version = "assessWorkflows 0.1", description = "Lists untrusted github actions used in github workflows throughout an organization")
 class assessWorkflows implements Callable<Integer> {
 
     @Parameters(index = "0", description = "The organization/user to analyze", defaultValue = "redhat-developer")
     private static String orgOrUser;
 
-    @Option(names = { "-t", "--trusted" },  description="Comma-separated list of trusted action publishers",  split = ",", defaultValue = "actions,docker" )
+    @Option(names = { "-t",
+            "--trusted" }, description = "Comma-separated list of trusted action publishers", split = ",", defaultValue = "actions,docker")
     private static List<String> trustedPublishers = new ArrayList<>();
 
-    @Option(names = { "-r", "--repos" },  description="Comma-separated list of repositories from the selected organization to analyze",  split = "," )
+    @Option(names = { "-r",
+            "--repos" }, description = "Comma-separated list of repositories from the selected organization to analyze.", split = ",", defaultValue = "vscode-yaml")
     private List<String> repos = new ArrayList<>();
 
+    @Option(names = { "-pr", "--pull-requests" }, description = "Generate Pull-Requests to pin the Actions SHA1")
+    private boolean generatePR = false;
+
+    
     assessWorkflows() throws Exception {
     }
-    
+
     public static void main(String... args) throws Exception {
         int exitCode = new CommandLine(new assessWorkflows()).execute(args);
         System.exit(exitCode);
     }
 
     private GitHub github = GitHub.connect();
-    
+
     @Override
     public Integer call() throws Exception {
-        System.out.println("Fetching "+ orgOrUser + " repositories");
+        System.out.println("Fetching " + orgOrUser + " repositories");
+
         GHPerson owner = null;
         try {
             owner = github.getOrganization(orgOrUser);
@@ -77,16 +85,20 @@ class assessWorkflows implements Callable<Integer> {
                 return;
             }
             if (repo.isArchived()) {
-                System.out.println("✋ ignoring archived "+repo.getHtmlUrl());
+                System.out.println("✋ ignoring archived " + repo.getHtmlUrl());
                 return;
             }
-            System.out.println("🔍 analyzing "+repo.getHtmlUrl());
+            System.out.println("🔍 analyzing " + repo.getHtmlUrl());
             var workflowsDir = repo.getDirectoryContent(".github/workflows/");
-            workflowsDir.forEach(this::analyzeWorkflow );
+            PRContent prContent = new PRContent(repo);
+            workflowsDir.forEach(dir -> analyzeWorkflow(prContent, dir));
+            if (generatePR && prContent.hasChanges()) {
+                openPR(prContent);
+            }
         } catch (GHFileNotFoundException missing) {
             // System.err.println(repo.getHtmlUrl() + " has no workflows?!");
         } catch (Exception e) {
-            throw new RuntimeException(e);
+            e.printStackTrace();
         }
     }
 
@@ -99,7 +111,7 @@ class assessWorkflows implements Callable<Integer> {
         var matcher = actionPattern.matcher(uses);
         if (matcher.find()) {
             return new Action(matcher.group(1), matcher.group(2), matcher.group(3));
-        } else if (uses.startsWith(".")){
+        } else if (uses.startsWith(".")) {
             return new Action(null, uses, null);
         } else {
             System.err.println(uses + " is not an action");
@@ -107,8 +119,12 @@ class assessWorkflows implements Callable<Integer> {
         return null;
     }
 
-    record Workflow(String name, Map<String, Job> jobs) {};
-    record Job(String name, List<Step> steps) {};
+    record Workflow(String name, Map<String, Job> jobs) {
+    };
+
+    record Job(String name, List<Step> steps) {
+    };
+
     record Step(String name, String uses) {
         Action action() {
             return toAction(uses);
@@ -117,14 +133,14 @@ class assessWorkflows implements Callable<Integer> {
 
     Map<String, String> actionsCache = new HashMap<>();
 
-    private void analyzeWorkflow(GHContent workflowFile) {
+    private void analyzeWorkflow(assessWorkflows.PRContent prContent, GHContent workflowFile) {
         if (!workflowFile.isFile()) {
             System.out.println(workflowFile.getName() + " is a directory");
-            //TODO see if we need to look inside this dir/
+            // TODO see if we need to look inside this dir/
             return;
         }
         try {
-            System.out.println(" 👀 "+workflowFile.getHtmlUrl());
+            System.out.println(" 👀 " + workflowFile.getHtmlUrl());
             Workflow wf = getWorkflow(workflowFile);
             if (wf == null || wf.jobs() == null) {
                 return;
@@ -136,11 +152,14 @@ class assessWorkflows implements Callable<Integer> {
                         if (action != null && !action.isTrusted()) {
                             var sha = getActionSha1(k, action);
                             if (sha != null && !sha.equals(action.version())) {
-                                System.out.println("Job " + k + " is using action " + s.uses() + " should be: " + s.uses().replace(action.version(), sha));
+                                prContent.recordChange(workflowFile, action, sha);
+                                System.out.println("Job " + k + " is using action " + s.uses() + " should be: "
+                                        + s.uses().replace(action.version(), sha));
                             }
                         }
                     });
-                };
+                }
+                ;
             });
         } catch (IOException e) {
             throw new RuntimeException(e);
@@ -148,7 +167,8 @@ class assessWorkflows implements Callable<Integer> {
     }
 
     private Workflow getWorkflow(GHContent workflow) throws IOException {
-        var mapper = new ObjectMapper(new YAMLFactory()).configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+        var mapper = new ObjectMapper(new YAMLFactory()).configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES,
+                false);
         try {
             return mapper.readValue(IOUtils.toString(workflow.read(), "UTF-8"), Workflow.class);
         } catch (MismatchedInputException ex) {
@@ -168,34 +188,144 @@ class assessWorkflows implements Callable<Integer> {
                 var tree = repo.getTree(action.version());
                 return tree.getSha();
             } catch (Exception e) {
-                System.out.println("Job " + job + " is using action " + action + " but we cannot identify the commit SHA");
+                System.out.println(
+                        "Job " + job + " is using action " + action + " but we cannot identify the commit SHA");
                 return null;
             }
         });
         return actionsCache.get(actionKey);
     }
 
-    static record Action(String org, String name, String version) {
+    static class PRContent {
 
+        private record ActionChange(Action action, String version) {
+        };
+
+        private Multimap<GHContent, ActionChange> changes = ArrayListMultimap.create();;
+        public GHRepository repo;
+
+        PRContent(GHRepository repo) {
+            this.repo = repo;
+        }
+
+        boolean hasChanges() {
+            return !changes.isEmpty();
+        }
+
+        void recordChange(GHContent file, Action action, String version) {
+            changes.put(file, new ActionChange(action, version));
+        }
+
+    }
+
+    static record Action(String org, String name, String version) {
         public String repo() {
             if (org == null) {
                 return null;
             }
             var slash = name.indexOf("/");
-            return org + "/" + ((slash < 0)? name: name.substring(0, slash));
+            return org + "/" + ((slash < 0) ? name : name.substring(0, slash));
         }
 
         public String toString() {
             if (org == null) {
                 return name;
             }
-            return org+"/"+name+ ((version == null)?"":"@"+version);
+            return org + "/" + name + ((version == null) ? "" : "@" + version);
         }
 
         boolean isTrusted() {
-            return  org == null // Action local to this repo is trusted
+            return org == null // Action local to this repo is trusted
                     || orgOrUser.equals(org) // Current owner is trusted
-                    || trustedPublishers.contains(org); //Trusted org
+                    || trustedPublishers.contains(org); // Trusted org
         }
+    }
+
+    private static final String PR_BODY = """
+            Hi!
+
+            Following the [GH Action Security Hardening](https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions#using-third-party-actions) guide we should use the commit SHA instead of the `branch` or `tag` for any third-party untrusted action.
+
+            This PR was submitted by a script.
+            """;
+
+    private static final String COMMIT_MSG = "Pin 3rd-party actions to SHA1";
+
+    public void openPR(PRContent prContent) {
+        // Get the repository
+        var repo = prContent.repo;
+        try {
+
+            // Check there's no PR already
+            var prs = repo.getPullRequests(GHIssueState.OPEN);
+            if (prs.stream().filter(pr -> COMMIT_MSG.equalsIgnoreCase(pr.getTitle())).findAny().isPresent()) {
+                System.err.print("PR already opened");
+                return;
+            }
+
+            var fork = github.getMyself().getRepository(repo.getName());
+            if (fork == null) {
+                System.err.println("Creating fork");
+                fork = repo.fork();
+            }
+
+            var headSha = repo.getRef("heads/" + repo.getDefaultBranch()).getObject().getSha();
+            var branchName = "pin-actions-sha1";
+            var branchRef = "refs/heads/" + branchName;
+
+            // Create branch
+            try {
+                fork.getRef(branchRef);
+                System.err.println(branchRef + " exists");
+            } catch (Exception e) {
+                System.err.println(e.getMessage());
+                System.err.println("Creating branch " + branchRef);
+                fork.createRef(branchRef, headSha);
+            }
+
+            for (var change : prContent.changes.asMap().entrySet()) {
+                var file = change.getKey();
+                var updates = change.getValue();
+                String filePath = file.getPath();
+                // Check if the file exists
+                GHContent content = fork.getFileContent(filePath, branchName);
+                String fileContent = IOUtils.toString(content.read(), "UTF-8");
+                String newContent = update(fileContent, updates);
+                if (fileContent.equals(newContent)) {
+                    System.err.println("Content hasn't changed, continue ...");
+                    continue;
+                }
+                // var response = content.update(newContent, COMMIT_MSG+" in "+filePath,
+                // branchName);
+                var response = fork.createContent().message(COMMIT_MSG + " in " + filePath)
+                        .path(filePath)
+                        .content(newContent)
+                        .branch(branchName)
+                        .sha(content.getSha())
+                        .commit();
+                var commit = response.getCommit();
+                System.out.println("Created commit " + commit.getHtmlUrl());
+
+                // targetRepo.
+                var pr = repo.createPullRequest(COMMIT_MSG, github.getMyself().getLogin() + ":" + branchName,
+                        repo.getDefaultBranch(), PR_BODY);
+                System.err.println("Opened PR " + pr.getHtmlUrl());
+                // fork.getFileContent(filePath).update(fileContent, "update tencent.yaml");
+                // repo.createPullRequest("update CI.yaml", fork.getFullName()+"",
+                // repo.getDefaultBranch(), "update CI.yaml");
+            }
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+
+    }
+
+    private String update(String fileContent, Collection<assessWorkflows.PRContent.ActionChange> updates) {
+        String newContent = fileContent;
+        for (var chg : updates) {
+            var a = chg.action;
+            newContent = newContent.replace(a.toString(), a.org + "/" + a.name + "@" + chg.version + " #" + a.version);
+        }
+        return newContent;
     }
 }
