@@ -48,7 +48,7 @@ class assessWorkflows implements Callable<Integer> {
     private static List<String> trustedPublishers = new ArrayList<>();
 
     @Option(names = { "-r",
-            "--repos" }, description = "Comma-separated list of repositories from the selected organization to analyze.", split = ",", defaultValue = "vscode-yaml")
+            "--repos" }, description = "Comma-separated list of repositories from the selected organization to analyze. Support wildcard suffixes, e.g. repo*", split = ",", defaultValue = "vscode-yaml")
     private List<String> repos = new ArrayList<>();
 
     @Option(names = { "-pr", "--pull-requests" }, description = "Generate Pull-Requests to pin the Actions SHA1")
@@ -81,7 +81,7 @@ class assessWorkflows implements Callable<Integer> {
 
     private void analyze(String name, GHRepository repo) {
         try {
-            if (!repos.isEmpty() && !repos.contains(name)) {
+            if (!isRepoIncluded(name)) {
                 return;
             }
             if (repo.isArchived()) {
@@ -100,6 +100,23 @@ class assessWorkflows implements Callable<Integer> {
         } catch (Exception e) {
             e.printStackTrace();
         }
+        System.out.println();
+    }
+
+    private boolean isRepoIncluded(String name) {
+        if (repos.isEmpty()) {
+            return true;
+        }
+        for (var repo : repos) {
+            if (repo.endsWith("*")) {
+                if (name.startsWith(repo.replace("*", ""))) {
+                    return true;
+                }
+            }  else if (name.equalsIgnoreCase(repo)){
+                return true;
+            }
+        }
+        return false;
     }
 
     private static final Pattern actionPattern = Pattern.compile("(\\S[^\\/]+)\\/(.+)@(\\S+)");
@@ -153,7 +170,7 @@ class assessWorkflows implements Callable<Integer> {
                             var sha = getActionSha1(k, action);
                             if (sha != null && !sha.equals(action.version())) {
                                 prContent.recordChange(workflowFile, action, sha);
-                                System.out.println("Job " + k + " is using action " + s.uses() + " should be: "
+                                System.out.println("\tJob " + k + " is using action " + s.uses() + " should be: "
                                         + s.uses().replace(action.version(), sha));
                             }
                         }
@@ -258,14 +275,15 @@ class assessWorkflows implements Callable<Integer> {
 
             // Check there's no PR already
             var prs = repo.getPullRequests(GHIssueState.OPEN);
-            if (prs.stream().filter(pr -> COMMIT_MSG.equalsIgnoreCase(pr.getTitle())).findAny().isPresent()) {
-                System.err.print("PR already opened");
+            var existingPR = prs.stream().filter(pr -> COMMIT_MSG.equalsIgnoreCase(pr.getTitle())).findAny();
+            if (existingPR.isPresent()) {
+                System.out.println("PR already opened: "+ existingPR.get().getHtmlUrl());
                 return;
             }
 
             var fork = github.getMyself().getRepository(repo.getName());
             if (fork == null) {
-                System.err.println("Creating fork");
+                System.out.println("Creating fork of "+ repo.getName());
                 fork = repo.fork();
             }
 
@@ -276,10 +294,9 @@ class assessWorkflows implements Callable<Integer> {
             // Create branch
             try {
                 fork.getRef(branchRef);
-                System.err.println(branchRef + " exists");
+                System.out.println(branchRef + " exists");
             } catch (Exception e) {
-                System.err.println(e.getMessage());
-                System.err.println("Creating branch " + branchRef);
+                System.out.println("Creating branch " + branchRef);
                 fork.createRef(branchRef, headSha);
             }
 
@@ -292,7 +309,7 @@ class assessWorkflows implements Callable<Integer> {
                 String fileContent = IOUtils.toString(content.read(), "UTF-8");
                 String newContent = update(fileContent, updates);
                 if (fileContent.equals(newContent)) {
-                    System.err.println("Content hasn't changed, continue ...");
+                    System.out.println("Content hasn't changed, continue ...");
                     continue;
                 }
                 // var response = content.update(newContent, COMMIT_MSG+" in "+filePath,
@@ -306,10 +323,9 @@ class assessWorkflows implements Callable<Integer> {
                 var commit = response.getCommit();
                 System.out.println("Created commit " + commit.getHtmlUrl());
 
-                // targetRepo.
                 var pr = repo.createPullRequest(COMMIT_MSG, github.getMyself().getLogin() + ":" + branchName,
                         repo.getDefaultBranch(), PR_BODY);
-                System.err.println("Opened PR " + pr.getHtmlUrl());
+                System.out.println("Opened PR " + pr.getHtmlUrl());
                 // fork.getFileContent(filePath).update(fileContent, "update tencent.yaml");
                 // repo.createPullRequest("update CI.yaml", fork.getFullName()+"",
                 // repo.getDefaultBranch(), "update CI.yaml");

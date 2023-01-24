@@ -16,10 +16,14 @@ JBang will automatically download a compatible JDK if needed.
 
 > jbang assessWorkflows.java -pr -r repo1,repo2
 
+- Wildcard suffixes are supported too, as in: 
+
+> jbang assessWorkflows.java -pr -r repo*
 
 For more info, use the help:
 
 ```
+jbang ./assessWorkflows.java -h
 Usage: assessWorkflows [-hV] [-pr] [-r=<repos>[,<repos>...]]...
                        [-t=<trustedPublishers>[,<trustedPublishers>...]]...
                        <orgOrUser>
@@ -30,7 +34,8 @@ organization
       -pr, --pull-requests   Generate Pull-Requests to pin the Actions SHA1
   -r, --repos=<repos>[,<repos>...]
                              Comma-separated list of repositories from the
-                               selected organization to analyze.
+                               selected organization to analyze. Support
+                               wildcard suffixes, e.g. repo*
   -t, --trusted=<trustedPublishers>[,<trustedPublishers>...]
                              Comma-separated list of trusted action publishers
   -V, --version              Print version information and exit.
