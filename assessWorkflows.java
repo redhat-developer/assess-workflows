@@ -17,7 +17,9 @@ import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.regex.Pattern;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonMappingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.exc.MismatchedInputException;
 import com.fasterxml.jackson.dataformat.yaml.YAMLFactory;
@@ -37,7 +39,7 @@ import picocli.CommandLine.Option;
 class assessWorkflows implements Callable<Integer> {
 
     @Parameters(index = "0", description = "The organization to analyze", defaultValue = "redhat-developer")
-    private String organization;
+    private static String organization;
 
     @Option(names = { "-t", "--trusted" },  description="Comma-separated list of trusted action publishers",  split = ",", defaultValue = "actions,docker" )
     private static List<String> trustedPublishers = new ArrayList<>();
@@ -82,86 +84,53 @@ class assessWorkflows implements Callable<Integer> {
         }
     }
 
+    private static final Pattern actionPattern = Pattern.compile("(\\S[^\\/]+)\\/(.+)@(\\S+)");
+
+    public static Action toAction(String uses) {
+        if (uses == null) {
+            return null;
+        }
+        var matcher = actionPattern.matcher(uses);
+        if (matcher.find()) {
+            return new Action(matcher.group(1), matcher.group(2), matcher.group(3));
+        } else if (uses.startsWith(".")){
+            return new Action(null, uses, null);
+        } else {
+            System.err.println(uses + " is not an action");
+        }
+        return null;
+    }
+
     record Workflow(String name, Map<String, Job> jobs) {};
     record Job(String name, List<Step> steps) {};
     record Step(String name, String uses) {
-
-        boolean isReusable() {
-            var first = uses.indexOf('/');
-            var last = uses.lastIndexOf('/');
-            return (uses != null && (uses.endsWith(".yaml") || uses.endsWith(".yml") || first != last));
-        }
-        boolean isTrusted() {
-            return (uses == null || isReusable() || trustedPublishers.stream().anyMatch(tp -> uses.startsWith(tp + "/")));
-        }
-
-        String getOrg() {
-            if (uses == null) {
-                return null;
-            } else {
-                int i = uses.indexOf('/');
-                return uses.substring(0, i);
-            }
-        }
-
-        String getRepo() {
-            if (uses == null) {
-                return null;
-            } else {
-                int i = uses.indexOf('/');
-                int v = uses.indexOf('@');
-                return uses.substring(i + 1, v);
-            }
-        }
-
-        String getVersion() {
-            if (uses == null) {
-                return null;
-            } else {
-                int v = uses.indexOf('@');
-                return uses.substring(v + 1);
-            }
+        Action action() {
+            return toAction(uses);
         }
     };
 
     Map<String, String> actionsCache = new HashMap<>();
 
-    private void analyzeWorkflow(GHContent workflow) {
-        if (!workflow.isFile()) {
-            System.out.println(workflow.getName() + " is a directory");
+    private void analyzeWorkflow(GHContent workflowFile) {
+        if (!workflowFile.isFile()) {
+            System.out.println(workflowFile.getName() + " is a directory");
             //TODO see if we need to look inside this dir/
             return;
         }
         try {
-            System.out.println(" 👀 "+workflow.getHtmlUrl());
-            var mapper = new ObjectMapper(new YAMLFactory()).configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
-            Workflow wf = null;
-            try {
-                wf = mapper.readValue(IOUtils.toString(workflow.read(), "UTF-8"), Workflow.class);
-            } catch (MismatchedInputException ex) {
-                // non parsable yaml / skipping
-                wf = new Workflow("", Map.of());
+            System.out.println(" 👀 "+workflowFile.getHtmlUrl());
+            Workflow wf = getWorkflow(workflowFile);
+            if (wf == null || wf.jobs() == null) {
+                return;
             }
-
             wf.jobs().forEach((k, v) -> {
                 if (v.steps() != null) {
                     v.steps().forEach(s -> {
-                        if (!s.isTrusted()) {
-                            var actionKey = s.getOrg() + "/" + s.getRepo() + "@" + s.getVersion();
-                            actionsCache.computeIfAbsent(actionKey, ignored -> {
-                                try {
-                                    var repo = github.getRepository(s.getOrg() + "/" + s.getRepo());
-                                    var tree = repo.getTree(s.getVersion());
-                                    return tree.getSha();
-                                } catch (Exception e) {
-                                    System.out.println("Job " + k + " is using action " + s.uses() + " but we cannot identify the commit SHA");
-                                    return null;
-                                }
-                            });
-
-                            var sha = actionsCache.get(actionKey);
-                            if (sha != null && !s.getVersion().equals(sha)) {
-                                System.out.println("Job " + k + " is using action " + s.uses() + " should be: " + s.uses().replace(s.getVersion(), sha));
+                        var action = s.action();
+                        if (action != null && !action.isTrusted()) {
+                            var sha = getActionSha1(k, action);
+                            if (sha != null && !sha.equals(action.version())) {
+                                System.out.println("Job " + k + " is using action " + s.uses() + " should be: " + s.uses().replace(action.version(), sha));
                             }
                         }
                     });
@@ -172,9 +141,53 @@ class assessWorkflows implements Callable<Integer> {
         }
     }
 
-    static record Action(String publisher, String name, String version) {
+    private Workflow getWorkflow(GHContent workflow) throws IOException {
+        var mapper = new ObjectMapper(new YAMLFactory()).configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+        try {
+            return mapper.readValue(IOUtils.toString(workflow.read(), "UTF-8"), Workflow.class);
+        } catch (MismatchedInputException ex) {
+            // non parsable yaml / skipping
+        }
+        return null;
+    }
+
+    private String getActionSha1(String job, Action action) {
+        if (action == null || action.org() == null) {
+            return null;
+        }
+        String actionKey = action.toString();
+        actionsCache.computeIfAbsent(actionKey, ignored -> {
+            try {
+                var repo = github.getRepository(action.repo());
+                var tree = repo.getTree(action.version());
+                return tree.getSha();
+            } catch (Exception e) {
+                System.out.println("Job " + job + " is using action " + action + " but we cannot identify the commit SHA");
+                return null;
+            }
+        });
+        return actionsCache.get(actionKey);
+    }
+
+    static record Action(String org, String name, String version) {
+
+        public String repo() {
+            if (org == null) {
+                return null;
+            }
+            var slash = name.indexOf("/");
+            return org + "/" + ((slash < 0)? name: name.substring(0, slash));
+        }
+
         public String toString() {
-            return publisher+"/"+name+"@"+version;
+            if (org == null) {
+                return name;
+            }
+            return org+"/"+name+ ((version == null)?"":"@"+version);
+        }
+
+        boolean isTrusted() {
+            return  org == null || organization.equals(org) || trustedPublishers.contains(org);
         }
     }
 }
