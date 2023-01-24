@@ -86,6 +86,7 @@ class assessWorkflows implements Callable<Integer> {
             }
             if (repo.isArchived()) {
                 System.out.println("✋ ignoring archived " + repo.getHtmlUrl());
+                System.out.println();
                 return;
             }
             System.out.println("🔍 analyzing " + repo.getHtmlUrl());
