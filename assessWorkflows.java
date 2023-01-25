@@ -1,4 +1,25 @@
 ///usr/bin/env jbang "$0" "$@" ; exit $?
+/*
+ Copyright (c) 2023 Red Hat, Inc.
+
+ Permission is hereby granted, free of charge, to any person obtaining a copy of
+ this software and associated documentation files (the "Software"), to deal in
+ the Software without restriction, including without limitation the rights to
+ use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+ the Software, and to permit persons to whom the Software is furnished to do so,
+ subject to the following conditions:
+
+ The above copyright notice and this permission notice shall be included in all
+ copies or substantial portions of the Software.
+
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
 //DEPS info.picocli:picocli:4.6.3
 //DEPS org.kohsuke:github-api:1.313
 //DEPS commons-io:commons-io:2.11.0
@@ -6,7 +27,7 @@
 //DEPS com.fasterxml.jackson.core:jackson-core:2.12.4
 //DEPS com.fasterxml.jackson.core:jackson-databind:2.12.4
 //DEPS com.google.guava:guava:31.1-jre
-//JAVA 17
+//JAVA 17+
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -296,11 +317,14 @@ class assessWorkflows implements Callable<Integer> {
             try {
                 fork.getRef(branchRef);
                 System.out.println(branchRef + " exists");
+                //TODO we probably need to update the branch or it might be stale
             } catch (Exception e) {
                 System.out.println("Creating branch " + branchRef);
                 fork.createRef(branchRef, headSha);
             }
 
+            //Unfortunately (?) GitHub API doesn't provide a way to create batch changes in a single commit
+            //So we end up with 1 commit / file changed
             for (var change : prContent.changes.asMap().entrySet()) {
                 var file = change.getKey();
                 var updates = change.getValue();
@@ -313,8 +337,6 @@ class assessWorkflows implements Callable<Integer> {
                     System.out.println("Content hasn't changed, continue ...");
                     continue;
                 }
-                // var response = content.update(newContent, COMMIT_MSG+" in "+filePath,
-                // branchName);
                 var response = fork.createContent().message(COMMIT_MSG + " in " + filePath)
                         .path(filePath)
                         .content(newContent)
@@ -327,9 +349,6 @@ class assessWorkflows implements Callable<Integer> {
                 var pr = repo.createPullRequest(COMMIT_MSG, github.getMyself().getLogin() + ":" + branchName,
                         repo.getDefaultBranch(), PR_BODY);
                 System.out.println("Opened PR " + pr.getHtmlUrl());
-                // fork.getFileContent(filePath).update(fileContent, "update tencent.yaml");
-                // repo.createPullRequest("update CI.yaml", fork.getFullName()+"",
-                // repo.getDefaultBranch(), "update CI.yaml");
             }
         } catch (Exception e) {
             throw new RuntimeException(e);

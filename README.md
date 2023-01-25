@@ -165,3 +165,7 @@ PR already opened: https://github.com/redhat-developer/vscode-tekton/pull/738
         Job build is using action GabrielBB/xvfb-action@v1.0 should be: GabrielBB/xvfb-action@fe2609f8182a9ed5aee7d53ff3ed04098a904df2
 PR already opened: https://github.com/redhat-developer/vscode-yaml/pull/875
 ```
+
+## License
+
+MIT, See [LICENSE](LICENSE) for more information.
