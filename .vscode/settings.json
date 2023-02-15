@@ -1,0 +1,5 @@
+{
+  "java.compile.nullAnalysis.mode": "disabled",
+  "copyrightInserter.license": "mit",
+  "copyrightInserter.holder": "Red Hat, Inc."
+}

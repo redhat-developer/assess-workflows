@@ -27,6 +27,7 @@
 //DEPS com.fasterxml.jackson.core:jackson-core:2.12.4
 //DEPS com.fasterxml.jackson.core:jackson-databind:2.12.4
 //DEPS com.google.guava:guava:31.1-jre
+//DEPS org.gitlab4j:gitlab4j-api:5.0.1
 //JAVA 17+
 
 import java.io.IOException;
@@ -65,11 +66,11 @@ class assessWorkflows implements Callable<Integer> {
     private static String orgOrUser;
 
     @Option(names = { "-t",
-            "--trusted" }, description = "Comma-separated list of trusted action publishers", split = ",", defaultValue = "actions,docker")
+            "--trusted" }, description = "Comma-separated list of trusted action publishers", split = ",", defaultValue = "actions,docker,redhat-actions")
     private static List<String> trustedPublishers = new ArrayList<>();
 
     @Option(names = { "-r",
-            "--repos" }, description = "Comma-separated list of repositories from the selected organization to analyze. Support wildcard suffixes, e.g. repo*", split = ",", defaultValue = "vscode-yaml")
+            "--repos" }, description = "Comma-separated list of repositories from the selected organization to analyze. Support wildcard suffixes, e.g. repo*", split = ",")
     private List<String> repos = new ArrayList<>();
 
     @Option(names = { "-pr", "--pull-requests" }, description = "Generate Pull-Requests to pin the Actions SHA1")
@@ -292,6 +293,10 @@ class assessWorkflows implements Callable<Integer> {
 
     public void openPR(PRContent prContent) {
         // Get the repository
+        if (!prContent.hasChanges()) {
+            return;
+        }
+
         var repo = prContent.repo;
         try {
 
@@ -345,11 +350,10 @@ class assessWorkflows implements Callable<Integer> {
                         .commit();
                 var commit = response.getCommit();
                 System.out.println("Created commit " + commit.getHtmlUrl());
-
-                var pr = repo.createPullRequest(COMMIT_MSG, github.getMyself().getLogin() + ":" + branchName,
-                        repo.getDefaultBranch(), PR_BODY);
-                System.out.println("Opened PR " + pr.getHtmlUrl());
             }
+            var pr = repo.createPullRequest(COMMIT_MSG, github.getMyself().getLogin() + ":" + branchName,
+                    repo.getDefaultBranch(), PR_BODY);
+            System.out.println("Opened PR " + pr.getHtmlUrl());
         } catch (Exception e) {
             throw new RuntimeException(e);
         }
