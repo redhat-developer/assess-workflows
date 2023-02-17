@@ -27,16 +27,19 @@
 //DEPS com.fasterxml.jackson.core:jackson-core:2.12.4
 //DEPS com.fasterxml.jackson.core:jackson-databind:2.12.4
 //DEPS com.google.guava:guava:31.1-jre
-//DEPS org.gitlab4j:gitlab4j-api:5.0.1
 //JAVA 17+
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.Callable;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Pattern;
 
 import org.apache.commons.io.IOUtils;
@@ -76,7 +79,14 @@ class assessWorkflows implements Callable<Integer> {
     @Option(names = { "-pr", "--pull-requests" }, description = "Generate Pull-Requests to pin the Actions SHA1")
     private boolean generatePR = false;
 
-    
+    @Option(names = { "-l", "--list-actions" }, description = "List all detected actions")
+    private boolean listActions = false;
+
+    private Set<Action> actions = new TreeSet<>();
+
+    private Set<PRContent> successfulPRs = new LinkedHashSet<>();
+    private Set<PRContent> failedPRs = new LinkedHashSet<>();
+
     assessWorkflows() throws Exception {
     }
 
@@ -92,12 +102,25 @@ class assessWorkflows implements Callable<Integer> {
         System.out.println("Fetching " + orgOrUser + " repositories");
 
         GHPerson owner = null;
+
         try {
             owner = github.getOrganization(orgOrUser);
         } catch (GHFileNotFoundException e) {
             owner = github.getUser(orgOrUser);
         }
         owner.getRepositories().forEach(this::analyze);
+        if (!successfulPRs.isEmpty()) {
+            System.out.println("Successfully opened " + successfulPRs.size() + " PRs");
+        }
+        if (!failedPRs.isEmpty()) {
+            System.out.println("Failed to open " + failedPRs.size() + " PRs");
+        }
+
+        if (listActions && !actions.isEmpty()) {
+            System.out.println("The following actions where found");
+            actions.forEach(System.out::println);
+        }
+
         return 0;
     }
 
@@ -135,7 +158,7 @@ class assessWorkflows implements Callable<Integer> {
                 if (name.startsWith(repo.replace("*", ""))) {
                     return true;
                 }
-            }  else if (name.equalsIgnoreCase(repo)){
+            } else if (name.equalsIgnoreCase(repo)) {
                 return true;
             }
         }
@@ -189,7 +212,11 @@ class assessWorkflows implements Callable<Integer> {
                 if (v.steps() != null) {
                     v.steps().forEach(s -> {
                         var action = s.action();
-                        if (action != null && !action.isTrusted()) {
+                        if (action == null) {
+                            return;
+                        }
+                        actions.add(action);
+                        if (!action.isTrusted()) {
                             var sha = getActionSha1(k, action);
                             if (sha != null && !sha.equals(action.version())) {
                                 prContent.recordChange(workflowFile, action, sha);
@@ -258,7 +285,7 @@ class assessWorkflows implements Callable<Integer> {
 
     }
 
-    static record Action(String org, String name, String version) {
+    static record Action(String org, String name, String version) implements Comparable<Action> {
         public String repo() {
             if (org == null) {
                 return null;
@@ -278,6 +305,11 @@ class assessWorkflows implements Callable<Integer> {
             return org == null // Action local to this repo is trusted
                     || orgOrUser.equals(org) // Current owner is trusted
                     || trustedPublishers.contains(org); // Trusted org
+        }
+
+        @Override
+        public int compareTo(assessWorkflows.Action other) {
+            return this.toString().compareToIgnoreCase(other.toString());
         }
     }
 
@@ -304,14 +336,15 @@ class assessWorkflows implements Callable<Integer> {
             var prs = repo.getPullRequests(GHIssueState.OPEN);
             var existingPR = prs.stream().filter(pr -> COMMIT_MSG.equalsIgnoreCase(pr.getTitle())).findAny();
             if (existingPR.isPresent()) {
-                System.out.println("PR already opened: "+ existingPR.get().getHtmlUrl());
+                System.out.println("PR already opened: " + existingPR.get().getHtmlUrl());
                 return;
             }
 
             var fork = github.getMyself().getRepository(repo.getName());
             if (fork == null) {
-                System.out.println("Creating fork of "+ repo.getName());
+                System.out.println("Creating fork of " + repo.getName());
                 fork = repo.fork();
+                TimeUnit.MILLISECONDS.sleep(1000);
             }
 
             var headSha = repo.getRef("heads/" + repo.getDefaultBranch()).getObject().getSha();
@@ -322,14 +355,15 @@ class assessWorkflows implements Callable<Integer> {
             try {
                 fork.getRef(branchRef);
                 System.out.println(branchRef + " exists");
-                //TODO we probably need to update the branch or it might be stale
+                // TODO we probably need to update the branch or it might be stale
             } catch (Exception e) {
                 System.out.println("Creating branch " + branchRef);
                 fork.createRef(branchRef, headSha);
             }
 
-            //Unfortunately (?) GitHub API doesn't provide a way to create batch changes in a single commit
-            //So we end up with 1 commit / file changed
+            // Unfortunately (?) GitHub API doesn't provide a way to create batch changes in
+            // a single commit
+            // So we end up with 1 commit / file changed
             for (var change : prContent.changes.asMap().entrySet()) {
                 var file = change.getKey();
                 var updates = change.getValue();
@@ -354,7 +388,9 @@ class assessWorkflows implements Callable<Integer> {
             var pr = repo.createPullRequest(COMMIT_MSG, github.getMyself().getLogin() + ":" + branchName,
                     repo.getDefaultBranch(), PR_BODY);
             System.out.println("Opened PR " + pr.getHtmlUrl());
+            successfulPRs.add(prContent);
         } catch (Exception e) {
+            failedPRs.add(prContent);
             throw new RuntimeException(e);
         }
 
